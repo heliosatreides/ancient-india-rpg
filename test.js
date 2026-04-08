@@ -1,21 +1,49 @@
 const assert = require('assert');
 const fs = require('fs');
 
-const ctxCalls = {
+const mainCalls = {
   fillRect: [],
   drawImage: [],
-  fillText: []
+  fillText: [],
+  clearRect: []
+};
+const terrainCalls = {
+  fillRect: [],
+  drawImage: [],
+  clearRect: []
 };
 
-const ctx = {
-  fillStyle: '',
-  font: '',
-  textAlign: '',
-  imageSmoothingEnabled: true,
-  fillRect: (...args) => ctxCalls.fillRect.push(args),
-  drawImage: (...args) => ctxCalls.drawImage.push(args),
-  fillText: (...args) => ctxCalls.fillText.push(args),
-  clearRect: () => {}
+function makeCtx(calls) {
+  return {
+    fillStyle: '',
+    strokeStyle: '',
+    font: '',
+    textAlign: '',
+    imageSmoothingEnabled: true,
+    fillRect: (...args) => calls.fillRect.push(args),
+    drawImage: (...args) => calls.drawImage.push(args),
+    fillText: (...args) => calls.fillText ? calls.fillText.push(args) : null,
+    clearRect: (...args) => calls.clearRect.push(args),
+    beginPath: () => {},
+    moveTo: () => {},
+    lineTo: () => {},
+    stroke: () => {},
+    save: () => {},
+    restore: () => {},
+    translate: () => {},
+    arc: () => {}
+  };
+}
+
+const mainCanvas = {
+  width: 0,
+  height: 0,
+  getContext: () => makeCtx(mainCalls)
+};
+const terrainCanvas = {
+  width: 0,
+  height: 0,
+  getContext: () => makeCtx(terrainCalls)
 };
 
 const statsEl = { innerHTML: '' };
@@ -25,30 +53,18 @@ const logEl = {
   scrollTop: 0,
   scrollHeight: 0,
   appendChild(node) {
-    this.innerHTML += node.innerHTML || '';
+    this.innerHTML += node.textContent || '';
     this.scrollHeight += 1;
   }
 };
-
-const dialogueNodes = {
-  '.name': { textContent: '' },
-  '.text': { innerHTML: '' },
-  '.choices': {
-    innerHTML: '',
-    children: [],
-    appendChild(node) {
-      this.children.push(node);
-    }
-  }
-};
 const dialogueEl = {
+  innerHTML: '',
   classList: {
     _visible: false,
-    contains(cls) { return cls === 'visible' ? this._visible : false; },
     add(cls) { if (cls === 'visible') this._visible = true; },
-    remove(cls) { if (cls === 'visible') this._visible = false; }
-  },
-  querySelector(sel) { return dialogueNodes[sel]; }
+    remove(cls) { if (cls === 'visible') this._visible = false; },
+    contains(cls) { return cls === 'visible' ? this._visible : false; }
+  }
 };
 
 const mockEl = () => ({
@@ -63,53 +79,31 @@ const mockEl = () => ({
   querySelectorAll: () => []
 });
 
-class MockImage {
-  constructor() {
-    this.onload = null;
-    this.onerror = null;
-    this.complete = false;
-    this.width = 0;
-    this.height = 0;
-    this._src = '';
-  }
-  set src(value) {
-    this._src = value;
-    this.complete = true;
-  }
-  get src() {
-    return this._src;
-  }
-}
-
-global.Image = MockImage;
+global.requestAnimationFrame = () => 0;
+global.window = { addEventListener: () => {}, requestAnimationFrame: () => 0 };
 global.document = {
   getElementById: (id) => {
-    if (id === 'world') {
-      return {
-        getContext: () => ctx,
-        width: 320,
-        height: 180
-      };
-    }
+    if (id === 'world') return mainCanvas;
     if (id === 'stats') return statsEl;
     if (id === 'inventory') return inventoryEl;
     if (id === 'log') return logEl;
     if (id === 'dialogue') return dialogueEl;
     return mockEl();
   },
-  createElement: () => ({ className: '', innerHTML: '', textContent: '', onclick: null })
+  createElement: (tag) => {
+    if (tag === 'canvas') return terrainCanvas;
+    return mockEl();
+  }
 };
-global.window = { addEventListener: () => {} };
 
 const source = fs.readFileSync('game.js', 'utf8');
 eval(source);
 
 try {
-  assert(global.player, 'player not exported');
   assert(global.world, 'world not exported');
-  assert(global.assets, 'assets not exported');
-  assert(global.assets.player, 'player asset not exported');
-  assert(typeof global.inventorySummary === 'function', 'inventorySummary not exported');
+  assert(global.player, 'player not exported');
+  assert(global.generateWorld, 'generateWorld not exported');
+  assert(global.renderTerrain, 'renderTerrain not exported');
   console.log('PASS: exports available');
 } catch (e) {
   console.error('FAIL: exports -', e.message);
@@ -117,54 +111,45 @@ try {
 }
 
 try {
-  assert(Array.isArray(global.player.inventory), 'player inventory missing');
-  assert(global.inventorySummary().includes('rudraksha mala'), 'inventory summary missing starter item');
-  assert(inventoryEl.innerHTML.includes('rudraksha mala'), 'inventory panel not rendered');
-  assert(statsEl.innerHTML.includes('inventory'), 'stats missing inventory row');
-  console.log('PASS: inventory UI');
+  assert(global.world.tiles instanceof Uint8Array, 'tiles should be typed');
+  assert.strictEqual(global.world.tiles.length, global.world.width * global.world.height, 'tile grid size mismatch');
+  const uniqueTiles = new Set(global.world.tiles);
+  assert(uniqueTiles.size <= 6, 'terrain should stay simple and readable');
+  assert(global.world.terrainCanvas, 'terrain buffer missing');
+  assert(global.world.terrainCanvas.width > 0 && global.world.terrainCanvas.height > 0, 'terrain canvas size invalid');
+  console.log('PASS: typed terrain');
 } catch (e) {
-  console.error('FAIL: inventory UI -', e.message);
+  console.error('FAIL: typed terrain -', e.message);
   process.exit(1);
 }
 
 try {
-  assert(global.assets.background && global.assets.characters, 'assets missing');
-  global.assets.background.onload && global.assets.background.onload();
-  global.assets.player.onload && global.assets.player.onload();
-  global.assets.characters.onload && global.assets.characters.onload();
-  ctxCalls.fillRect.length = 0;
-  ctxCalls.drawImage.length = 0;
+  mainCalls.fillRect.length = 0;
+  mainCalls.drawImage.length = 0;
+  global.world.dirty = true;
   global.draw();
-  assert(ctxCalls.drawImage.length > 0, 'drawImage was not used');
-  const backgroundCall = ctxCalls.drawImage[0];
-  assert.strictEqual(backgroundCall[1], 0, 'background draw should start at x=0');
-  assert.strictEqual(backgroundCall[2], 0, 'background draw should start at y=0');
-  assert.strictEqual(backgroundCall[3], 960, 'background draw should cover canvas width');
-  assert.strictEqual(backgroundCall[4], 540, 'background draw should cover canvas height');
-  const lastCall = ctxCalls.drawImage[ctxCalls.drawImage.length - 1];
-  assert(lastCall[7] >= 40, 'player sprite should be drawn wide enough to stay visible');
-  assert(lastCall[8] >= 64, 'player sprite should be drawn tall enough to stay visible');
-  assert(global.assets.player !== global.assets.characters, 'player should use a dedicated sprite asset');
-  assert(ctxCalls.fillText.some((args) => String(args[0]).toLowerCase().includes('you')), 'player visibility marker missing');
-  console.log('PASS: sprite drawing');
+  assert(mainCalls.drawImage.length >= 1, 'main canvas should use cached terrain drawImage');
+  assert(mainCalls.drawImage.some((call) => call[0] === global.world.terrainCanvas), 'terrain buffer not used on main canvas');
+  assert(mainCalls.fillRect.some((call) => call[2] >= 40 && call[3] >= 40), 'player highlight too small');
+  console.log('PASS: cached terrain render');
 } catch (e) {
-  console.error('FAIL: sprite drawing -', e.message);
+  console.error('FAIL: cached terrain render -', e.message);
   process.exit(1);
 }
 
 try {
-  const chest = global.world.objects.find((obj) => obj.type === 'chest');
-  assert(chest, 'chest missing');
-  chest.opened = false;
-  global.player.x = chest.x;
-  global.player.y = chest.y;
-  const before = global.player.inventory.length;
+  const shrine = global.world.objects.find((obj) => obj.type === 'shrine');
+  assert(shrine, 'shrine missing');
+  global.player.x = shrine.x;
+  global.player.y = shrine.y;
+  const dharmaBefore = global.player.dharma;
   global.interact();
-  assert.strictEqual(global.player.inventory.length, before + 1, 'opening chest should add an inventory item');
-  assert(inventoryEl.innerHTML.includes('ancient relic'), 'inventory panel should show newly found item');
-  console.log('PASS: chest loot');
+  assert(global.player.dharma > dharmaBefore, 'shrine should raise dharma');
+  assert(statsEl.innerHTML.includes('dharma'), 'stats panel should render');
+  assert(inventoryEl.innerHTML.includes('river shell'), 'inventory panel should render');
+  console.log('PASS: shrine interaction');
 } catch (e) {
-  console.error('FAIL: chest loot -', e.message);
+  console.error('FAIL: shrine interaction -', e.message);
   process.exit(1);
 }
 

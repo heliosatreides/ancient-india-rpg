@@ -2,26 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Chronicles of Aryavarta</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chronicles of Aryavarta</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="game-container">
+  <div id="game-shell">
     <canvas id="world"></canvas>
-    <div id="dialogue">
-      <div class="name"></div>
-      <div class="text"></div>
-      <div class="choices"></div>
-    </div>
 
-    <div id="ui">
+    <div id="hud">
       <div id="stats"></div>
       <div id="inventory"></div>
       <div id="log"></div>
-      <div id="controls"></div>
     </div>
+
+    <div id="dialogue"></div>
   </div>
+
   <script src="game.js"></script>
 </body>
 </html>

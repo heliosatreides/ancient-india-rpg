@@ -1,576 +1,447 @@
+// @ts-check
+
+/**
+ * Clean, typed, tile-based engine.
+ * The core world is a Uint8Array, static terrain is cached once, and the
+ * gameplay layer only draws the camera slice plus a handful of entities.
+ */
+
 const canvas = document.getElementById('world');
 const ctx = canvas.getContext('2d');
-const TILE = 16;
 
-canvas.width = 960;
-canvas.height = 540;
-if ('imageSmoothingEnabled' in ctx) {
-  ctx.imageSmoothingEnabled = false;
-}
+const TILE_SIZE = 32;
+const WORLD_WIDTH = 96;
+const WORLD_HEIGHT = 64;
+const VIEW_WIDTH = 960;
+const VIEW_HEIGHT = 540;
 
-const supportsImages = typeof Image !== 'undefined';
-const assetPaths = {
-  background: 'assets/images/backgrounds/ancient_indian_landscape.jpg',
-  terrain: 'assets/images/tiles/kenney_terrain_atlas.png',
-  props: 'assets/images/objects/kenney_props_atlas.png',
-  player: 'assets/images/characters/oga_player_single.png',
-  characters: 'assets/images/characters/rpg_characters.png'
-};
+canvas.width = VIEW_WIDTH;
+canvas.height = VIEW_HEIGHT;
+ctx.imageSmoothingEnabled = false;
 
-function loadImage(src) {
-  if (!supportsImages) return null;
-  const img = new Image();
-  img.__loaded = false;
-  img.onload = () => {
-    img.__loaded = true;
-    if (typeof draw === 'function') draw();
-  };
-  img.onerror = () => {
-    img.__loaded = false;
-    if (typeof draw === 'function') draw();
-  };
-  img.src = src;
-  return img;
-}
+/** @typedef {0|1|2|3|4|5} TileId */
+/** @typedef {{x:number, y:number, type:string, name:string, seen?:boolean, reward?:string}} Entity */
+/** @typedef {{x:number, y:number, facing:'up'|'down'|'left'|'right', dharma:number, vitality:number, inventory:string[], visualRadius:number}} Player */
+/** @typedef {{width:number, height:number, tiles:Uint8Array, terrainCanvas: HTMLCanvasElement, terrainCtx: CanvasRenderingContext2D, dirty:boolean, npcs:Entity[], objects:Entity[]}} World */
 
-const assets = {
-  background: loadImage(assetPaths.background),
-  terrain: loadImage(assetPaths.terrain),
-  props: loadImage(assetPaths.props),
-  player: loadImage(assetPaths.player),
-  characters: loadImage(assetPaths.characters)
-};
+const TILES = /** @type {const} */ ({
+  grass: 0,
+  path: 1,
+  water: 2,
+  forest: 3,
+  mountain: 4,
+  shrine: 5
+});
 
-const TILE_ATLAS_COLUMNS = 6;
-const TILE_ATLAS_SIZE = 64;
-const TILE_VARIANTS = {
-  grass: [0, 1, 2, 3, 4, 5],
-  path: [6, 7, 8, 9],
-  forest: [10],
-  mountain: [11],
-  water: [12, 13, 14, 16, 17],
-  temple_floor: [15]
-};
-
-const PROP_ATLAS = {
-  chest: 0,
-  temple: 1,
-  shrine: 2,
-  barrel: 3,
-  tree: 4,
-  archway: 5
-};
+const TILE_LABELS = [
+  'grass',
+  'path',
+  'water',
+  'forest',
+  'mountain',
+  'shrine'
+];
 
 const PALETTE = {
-  player: '#d4a56a',
-  npc: '#e6c45a',
-  text: '#f5e6c8',
-  grass: '#2e2619',
-  water: '#2a4a6b',
-  forest: '#1a2614',
-  mountain: '#4a4538',
-  path: '#5c4d3a',
-  temple_floor: '#7c6d52',
-  chest: '#b87333',
-  shrine: '#d7c27a',
-  barrel: '#8b5a2b',
-  tree: '#3c7a40'
+  grass: '#7d9b62',
+  path: '#c8ad7f',
+  water: '#4f7fb8',
+  forest: '#3c6243',
+  mountain: '#83807a',
+  shrine: '#efe1b6',
+  shrineFloor: '#ead79a',
+  player: '#f1d7b0',
+  playerTrim: '#2a1f18',
+  npc: '#f0cf67',
+  npcTrim: '#4f3d1f',
+  text: '#f5ebd7',
+  muted: '#b7a78d',
+  panel: 'rgba(15, 18, 20, 0.88)'
 };
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function indexFor(x, y) {
+  return y * WORLD_WIDTH + x;
+}
+
+function createCanvas(width, height) {
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = height;
+  return c;
+}
+
+function makeWorld() {
+  const terrainCanvas = createCanvas(WORLD_WIDTH * TILE_SIZE, WORLD_HEIGHT * TILE_SIZE);
+  const terrainCtx = terrainCanvas.getContext('2d');
+  terrainCtx.imageSmoothingEnabled = false;
+
+  /** @type {World} */
+  const world = {
+    width: WORLD_WIDTH,
+    height: WORLD_HEIGHT,
+    tiles: new Uint8Array(WORLD_WIDTH * WORLD_HEIGHT),
+    terrainCanvas,
+    terrainCtx,
+    dirty: true,
+    npcs: [],
+    objects: []
+  };
+
+  return world;
+}
+
+/** @type {World} */
+const world = makeWorld();
+
+/** @type {Player} */
 const player = {
-  x: 10,
-  y: 8,
-  dharma: 50,
-  wealth: 10,
-  health: 100,
-  energy: 100,
-  inventory: ['rudraksha mala'],
-  quests: [
-    { id: 1, title: 'first steps', desc: 'explore the world', completed: false }
-  ],
+  x: Math.floor(WORLD_WIDTH / 2) - 8,
+  y: Math.floor(WORLD_HEIGHT / 2) + 4,
   facing: 'down',
-  spriteIndex: 0,
-  walkFrame: 1
+  dharma: 52,
+  vitality: 100,
+  inventory: ['river shell'],
+  visualRadius: 24
 };
 
-const world = {
-  width: Math.floor(canvas.width / TILE),
-  height: Math.floor(canvas.height / TILE),
-  tiles: [],
-  npcs: [],
-  objects: []
+const camera = {
+  x: 0,
+  y: 0
 };
 
-const logEl = document.getElementById('log');
 const statsEl = document.getElementById('stats');
-const inventoryEl = document.getElementById('inventory') || document.getElementById('controls');
+const inventoryEl = document.getElementById('inventory');
+const logEl = document.getElementById('log');
 const dialogueEl = document.getElementById('dialogue');
 
-function spriteReady(img) {
-  return !!(img && img.__loaded);
+function setTile(x, y, tileId) {
+  world.tiles[indexFor(x, y)] = tileId;
 }
 
-function atlasSourceRect(index, columns = TILE_ATLAS_COLUMNS, size = TILE_ATLAS_SIZE) {
-  return {
-    sx: (index % columns) * size,
-    sy: Math.floor(index / columns) * size,
-    sw: size,
-    sh: size
-  };
+function getTile(x, y) {
+  if (x < 0 || y < 0 || x >= WORLD_WIDTH || y >= WORLD_HEIGHT) return TILES.mountain;
+  return world.tiles[indexFor(x, y)];
 }
 
-function tileVariant(type, x, y) {
-  const variants = TILE_VARIANTS[type] || TILE_VARIANTS.grass;
-  const choice = variants[(x * 7 + y * 13) % variants.length];
-  return choice;
+function tileName(tileId) {
+  return TILE_LABELS[tileId] || 'grass';
 }
 
-function drawAtlasCell(image, index, dx, dy, dw = TILE, dh = TILE, columns = TILE_ATLAS_COLUMNS, size = TILE_ATLAS_SIZE) {
-  const { sx, sy, sw, sh } = atlasSourceRect(index, columns, size);
-  ctx.drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh);
-}
-
-function fillTile(type, x, y) {
-  const color = PALETTE[type] || PALETTE.grass;
-  ctx.fillStyle = color;
-  ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
-}
-
-function drawTile(type, x, y) {
-  if (spriteReady(assets.terrain)) {
-    drawAtlasCell(assets.terrain, tileVariant(type, x, y), x * TILE, y * TILE);
-    return;
-  }
-  fillTile(type, x, y);
-}
-
-function drawObject(obj) {
-  const atlasIndex = PROP_ATLAS[obj.sprite || obj.type];
-  if (spriteReady(assets.props) && typeof atlasIndex === 'number') {
-    const src = atlasSourceRect(atlasIndex, 3, 64);
-    ctx.drawImage(assets.props, src.sx, src.sy, src.sw, src.sh, obj.x * TILE, obj.y * TILE, TILE, TILE);
-    return;
-  }
-
-  ctx.fillStyle = PALETTE[obj.type] || PALETTE.chest;
-  ctx.fillRect(obj.x * TILE, obj.y * TILE, TILE, TILE);
-}
-
-function characterSourceRect(spriteIndex, facing, frame = 1) {
-  const blockWidth = 3 * 64;
-  const blockHeight = 4 * 64;
-  const blockCol = spriteIndex % 5;
-  const blockRow = Math.floor(spriteIndex / 5);
-  const rowMap = { down: 0, left: 1, right: 2, up: 3 };
-  const row = rowMap[facing] ?? 0;
-  return {
-    sx: blockCol * blockWidth + frame * 64,
-    sy: blockRow * blockHeight + row * 64,
-    sw: 64,
-    sh: 64
-  };
-}
-
-function drawCharacter(entity, fallbackColor, outlineColor) {
-  const dx = entity.x * TILE;
-  const dy = entity.y * TILE;
-  if (spriteReady(assets.characters)) {
-    const frame = entity.walkFrame ?? 1;
-    const src = characterSourceRect(entity.spriteIndex || 0, entity.facing || 'down', frame);
-    ctx.drawImage(assets.characters, src.sx, src.sy, src.sw, src.sh, dx, dy, TILE, TILE);
-    return;
-  }
-
-  ctx.fillStyle = fallbackColor;
-  ctx.fillRect(dx, dy, TILE, TILE);
-  ctx.fillStyle = outlineColor;
-  const offset = entity.facing === 'up' ? [6, 2] : entity.facing === 'left' ? [2, 6] : entity.facing === 'right' ? [10, 6] : [6, 10];
-  ctx.fillRect(dx + offset[0], dy + offset[1], 4, 4);
-}
-
-function drawPlayer(entity) {
-  const dx = entity.x * TILE;
-  const dy = entity.y * TILE;
-  const renderWidth = 40;
-  const renderHeight = 64;
-  const offsetX = -12;
-  const offsetY = -36;
-
-  const markerX = dx + offsetX - 2;
-  const markerY = dy + offsetY - 2;
-  const markerW = renderWidth + 4;
-  const markerH = renderHeight + 4;
-
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
-  ctx.fillRect(dx - 4, dy + TILE - 6, TILE + 8, 6);
-  ctx.fillStyle = 'rgba(255, 204, 0, 0.36)';
-  ctx.fillRect(dx - 6, dy - 6, TILE + 12, TILE + 12);
-
-  if (spriteReady(assets.player)) {
-    ctx.drawImage(assets.player, 0, 0, assets.player.width, assets.player.height, dx + offsetX, dy + offsetY, renderWidth, renderHeight);
-    ctx.fillStyle = 'rgba(255, 230, 120, 0.9)';
-    ctx.fillRect(markerX, markerY, markerW, 2);
-    ctx.fillRect(markerX, markerY + markerH - 2, markerW, 2);
-    ctx.fillRect(markerX, markerY, 2, markerH);
-    ctx.fillRect(markerX + markerW - 2, markerY, 2, markerH);
-    ctx.fillStyle = '#fff6c8';
-    ctx.font = 'bold 10px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('you', dx + TILE / 2, dy + offsetY - 6);
-    return;
-  }
-
-  ctx.fillStyle = PALETTE.player;
-  ctx.fillRect(dx, dy - 4, TILE, TILE + 4);
-  ctx.fillStyle = '#ffcc00';
-  ctx.fillRect(dx + 4, dy - 12, 8, 8);
-}
-
-function generateQuest() {
-  const quests = [
-    { title: 'lost artifact', desc: 'find the ancient bell near the temple', reward: 'dharma +20' },
-    { title: 'strange omens', desc: 'investigate the glowing pond in the forest', reward: 'health +15' }
-  ];
-  return quests[Math.floor(Math.random() * quests.length)];
-}
-
-function getDialogFor(name) {
-  const dialogs = {
-    sadhu: [
-      'seek truth within.',
-      'dharma is the highest wealth.',
-      'even the mightiest warrior needs peace.'
-    ],
-    merchant: [
-      'fine spices and silks from the west!',
-      'gold speaks louder than words.',
-      'many come seeking, few find what they need.'
-    ],
-    brahmin: [
-      'the vedas guide the righteous path.',
-      'perform your duty without attachment.',
-      'seek knowledge, not just wealth.'
-    ],
-    kshatriya: [
-      'strength protects the weak.',
-      "a warrior's honor is his life.",
-      'i have faced many battles; each teaches humility.'
-    ],
-    shramana: [
-      'non-violence is the supreme virtue.',
-      'desire is the root of suffering.',
-      'walk the middle way.'
-    ],
-    deer: [
-      'gentle sounds of the forest...',
-      'be still, friend.'
-    ],
-    monkey: [
-      'bananas!',
-      'too much curiosity...',
-      'swing from branch to branch!'
-    ],
-    peacock: [
-      'i dance for the rain.',
-      'my feathers catch the sun.',
-      'beauty is a blessing and a burden.'
-    ]
-  };
-  const list = dialogs[name] || ['...'];
-  return list[Math.floor(Math.random() * list.length)];
-}
-
-function generateMap() {
-  const map = [];
+function generateWorld() {
   world.npcs = [];
   world.objects = [];
-  for (let y = 0; y < world.height; y++) {
-    const row = [];
-    for (let x = 0; x < world.width; x++) {
-      if ((x > 5 && x < 10 && y > 5 && y < 10) || (x > 40 && x < 48 && y > 12 && y < 18)) {
-        row.push('water');
-      } else if (x === 0 || x === world.width - 1 || y === 0 || y === world.height - 1) {
-        row.push('mountain');
-      } else if (x > 10 && x < 16 && y > 10 && y < 14) {
-        row.push('temple_floor');
-      } else if (Math.random() < 0.15) {
-        row.push('forest');
-      } else if (Math.sin(x * 0.3) + Math.cos(y * 0.3) > 1.2) {
-        row.push('path');
-      } else {
-        row.push('grass');
-      }
+
+  const centerX = Math.floor(WORLD_WIDTH / 2);
+  const centerY = Math.floor(WORLD_HEIGHT / 2);
+  const shrineX = centerX + 3;
+  const shrineY = centerY + 1;
+
+  for (let y = 0; y < WORLD_HEIGHT; y++) {
+    for (let x = 0; x < WORLD_WIDTH; x++) {
+      let tile = TILES.grass;
+
+      const border = x === 0 || y === 0 || x === WORLD_WIDTH - 1 || y === WORLD_HEIGHT - 1;
+      const lake = Math.abs(x - 18) + Math.abs(y - 15) < 10 || (x > 75 && y < 18 && Math.abs(x - 83) + Math.abs(y - 10) < 12);
+      const riverBand = Math.abs(y - (centerY + Math.sin(x / 8) * 3)) < 2.2;
+      const forestWest = x < 18 && y > 30 && y < 52;
+      const forestEast = x > 66 && y > 36 && y < 58;
+      const pathA = (x > 12 && x < centerX + 2 && Math.abs(y - (centerY + 2)) <= 1) || (y > 12 && y < centerY + 2 && Math.abs(x - (centerX - 8)) <= 1);
+      const pathB = (x > centerX - 2 && x < shrineX + 10 && Math.abs(y - shrineY) <= 1);
+
+      if (border) tile = TILES.mountain;
+      else if (lake || riverBand) tile = TILES.water;
+      else if (forestWest || forestEast) tile = TILES.forest;
+      else if (pathA || pathB) tile = TILES.path;
+      else if (Math.abs(x - shrineX) <= 1 && Math.abs(y - shrineY) <= 1) tile = TILES.shrine;
+
+      setTile(x, y, tile);
     }
-    map.push(row);
-  }
-  world.tiles = map;
-
-  const npcNames = ['sadhu', 'merchant', 'brahmin', 'kshatriya', 'shramana', 'deer', 'monkey', 'peacock'];
-  for (let i = 0; i < 8; i++) {
-    world.npcs.push({
-      x: Math.floor(Math.random() * (world.width - 4)) + 2,
-      y: Math.floor(Math.random() * (world.height - 4)) + 2,
-      name: npcNames[i],
-      spriteIndex: i,
-      facing: ['down', 'left', 'right', 'up'][i % 4],
-      walkFrame: 1,
-      dialog: getDialogFor(npcNames[i]),
-      quest: Math.random() < 0.4 ? generateQuest() : null
-    });
   }
 
-  world.objects = [
-    { x: 12, y: 12, type: 'temple', sprite: 'temple', name: 'ancient temple' },
-    { x: 25, y: 18, type: 'shrine', sprite: 'shrine', name: 'dharma shrine' },
-    { x: 32, y: 9, type: 'chest', sprite: 'chest', name: 'hidden chest' }
-  ];
+  world.objects.push(
+    { x: shrineX, y: shrineY, type: 'shrine', name: 'quiet shrine', reward: 'dharma' },
+    { x: centerX - 6, y: centerY - 2, type: 'relic', name: 'bronze relic', reward: 'relic' }
+  );
+
+  world.npcs.push({
+    x: centerX + 10,
+    y: centerY + 5,
+    type: 'sage',
+    name: 'path sage',
+    reward: 'wisdom'
+  });
+
+  world.dirty = true;
 }
 
-function countInventory() {
-  const counts = new Map();
-  for (const item of player.inventory) {
-    counts.set(item, (counts.get(item) || 0) + 1);
+function terrainColor(tileId) {
+  switch (tileId) {
+    case TILES.path: return PALETTE.path;
+    case TILES.water: return PALETTE.water;
+    case TILES.forest: return PALETTE.forest;
+    case TILES.mountain: return PALETTE.mountain;
+    case TILES.shrine: return PALETTE.shrineFloor;
+    default: return PALETTE.grass;
   }
-  return counts;
 }
 
-function inventorySummary() {
-  const counts = countInventory();
-  const parts = [];
-  for (const [name, qty] of counts.entries()) {
-    parts.push(qty > 1 ? `${name} ×${qty}` : name);
+function renderTerrain() {
+  const g = world.terrainCtx;
+  g.clearRect(0, 0, world.terrainCanvas.width, world.terrainCanvas.height);
+  g.imageSmoothingEnabled = false;
+
+  for (let y = 0; y < WORLD_HEIGHT; y++) {
+    for (let x = 0; x < WORLD_WIDTH; x++) {
+      const tileId = getTile(x, y);
+      const px = x * TILE_SIZE;
+      const py = y * TILE_SIZE;
+
+      g.fillStyle = terrainColor(tileId);
+      g.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+
+      // subtle depth without visual noise
+      g.fillStyle = tileId === TILES.water ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.05)';
+      if (tileId === TILES.water) {
+        g.fillRect(px + 4, py + 9, 18, 3);
+      } else if (tileId === TILES.path) {
+        g.fillRect(px + 5, py + 5, 22, 2);
+      } else if (tileId === TILES.shrine) {
+        g.fillRect(px + 6, py + 6, 20, 2);
+      }
+
+      g.fillStyle = 'rgba(0,0,0,0.12)';
+      g.fillRect(px, py + TILE_SIZE - 1, TILE_SIZE, 1);
+      g.fillRect(px + TILE_SIZE - 1, py, 1, TILE_SIZE);
+    }
   }
-  return parts.length ? parts.join(', ') : 'empty';
+
+  // shrine structure baked into the buffer for a cleaner, performance-friendly world.
+  const shrine = world.objects.find((o) => o.type === 'shrine');
+  if (shrine) {
+    const px = shrine.x * TILE_SIZE;
+    const py = shrine.y * TILE_SIZE;
+    g.fillStyle = '#9a7c4b';
+    g.fillRect(px + 6, py + 10, 20, 10);
+    g.fillStyle = '#f6e6a5';
+    g.fillRect(px + 10, py + 6, 12, 6);
+  }
+
+  world.dirty = false;
 }
 
-function renderInventory() {
-  if (!inventoryEl) return;
-  const counts = countInventory();
-  const items = Array.from(counts.entries());
-  const rows = items.map(([name, qty]) => `<div class="inventory-entry"><span>${name}</span><span>${qty}</span></div>`).join('');
-  inventoryEl.innerHTML = `
-    <div class="inventory-title">inventory</div>
-    <div class="inventory-summary">${inventorySummary()}</div>
-    <div class="inventory-list">${rows || '<div class="inventory-entry empty">empty</div>'}</div>
-  `;
+function updateCamera() {
+  const worldPixelWidth = WORLD_WIDTH * TILE_SIZE;
+  const worldPixelHeight = WORLD_HEIGHT * TILE_SIZE;
+  camera.x = clamp(player.x * TILE_SIZE - VIEW_WIDTH / 2, 0, worldPixelWidth - VIEW_WIDTH);
+  camera.y = clamp(player.y * TILE_SIZE - VIEW_HEIGHT / 2, 0, worldPixelHeight - VIEW_HEIGHT);
 }
 
-function updateStats() {
-  if (!statsEl) return;
-  statsEl.innerHTML = `
-    <div class="stat-row"><span class="stat-label">dharma</span><span class="stat-value">${player.dharma}</span></div>
-    <div class="stat-row"><span class="stat-label">wealth</span><span class="stat-value">${player.wealth}</span></div>
-    <div class="stat-row"><span class="stat-label">health</span><span class="stat-value">${player.health}</span></div>
-    <div class="stat-row"><span class="stat-label">energy</span><span class="stat-value">${player.energy}</span></div>
-    <div class="stat-row"><span class="stat-label">inventory</span><span class="stat-value">${inventorySummary()}</span></div>
-    <div style="margin-top:4px; font-size:11px; color:#a68b6c;">pos: ${Math.floor(player.x)},${Math.floor(player.y)}</div>
-  `;
-  renderInventory();
+function drawPanelText(el, html) {
+  if (el) el.innerHTML = html;
 }
 
-function log(msg, type = 'info') {
+function updateHud() {
+  drawPanelText(statsEl, `
+    <div class="panel-title">stats</div>
+    <div class="stat-row"><span>dharma</span><strong>${player.dharma}</strong></div>
+    <div class="stat-row"><span>vitality</span><strong>${player.vitality}</strong></div>
+    <div class="stat-row"><span>position</span><strong>${player.x}, ${player.y}</strong></div>
+  `);
+
+  drawPanelText(inventoryEl, `
+    <div class="panel-title">inventory</div>
+    <div class="inventory-list">${player.inventory.map((item) => `<div>${item}</div>`).join('')}</div>
+  `);
+}
+
+function log(message) {
   if (!logEl) return;
-  const p = document.createElement('p');
-  p.className = 'log-entry' + (type === 'important' ? ' log-important' : type === 'danger' ? ' log-danger' : '');
-  p.innerHTML = msg;
-  logEl.appendChild(p);
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.textContent = message;
+  logEl.appendChild(entry);
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-function showDialogue(name, text, choices = null) {
-  if (!dialogueEl) return;
-  dialogueEl.querySelector('.name').textContent = name;
-  dialogueEl.querySelector('.text').innerHTML = text;
-  const choicesDiv = dialogueEl.querySelector('.choices');
-  if (choices) {
-    choicesDiv.innerHTML = '';
-    for (const c of choices) {
-      const btn = document.createElement('button');
-      btn.textContent = c.label;
-      btn.onclick = () => c.action();
-      choicesDiv.appendChild(btn);
+function pointToScreen(x, y) {
+  return {
+    x: Math.round(x * TILE_SIZE - camera.x),
+    y: Math.round(y * TILE_SIZE - camera.y)
+  };
+}
+
+function drawPlayer() {
+  const p = pointToScreen(player.x, player.y);
+
+  // outer glow and shadow create a crisp silhouette.
+  ctx.fillStyle = 'rgba(255, 230, 140, 0.25)';
+  ctx.fillRect(p.x - 8, p.y - 10, 48, 48);
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.fillRect(p.x + 6, p.y + 28, 20, 7);
+
+  ctx.fillStyle = PALETTE.player;
+  ctx.fillRect(p.x + 7, p.y + 2, 18, 24);
+  ctx.fillStyle = PALETTE.playerTrim;
+  ctx.fillRect(p.x + 10, p.y + 7, 12, 12);
+  ctx.fillStyle = '#f6c94c';
+  ctx.fillRect(p.x + 4, p.y - 6, 24, 10);
+
+  // orientation marker, compact and readable.
+  ctx.fillStyle = '#fff2ba';
+  if (player.facing === 'up') ctx.fillRect(p.x + 11, p.y - 2, 6, 4);
+  else if (player.facing === 'down') ctx.fillRect(p.x + 11, p.y + 24, 6, 4);
+  else if (player.facing === 'left') ctx.fillRect(p.x + 2, p.y + 10, 4, 6);
+  else ctx.fillRect(p.x + 22, p.y + 10, 4, 6);
+}
+
+function drawNpc(npc) {
+  const p = pointToScreen(npc.x, npc.y);
+  ctx.fillStyle = 'rgba(255, 228, 120, 0.2)';
+  ctx.fillRect(p.x - 4, p.y - 4, 40, 40);
+  ctx.fillStyle = PALETTE.npc;
+  ctx.fillRect(p.x + 8, p.y + 4, 16, 22);
+  ctx.fillStyle = PALETTE.npcTrim;
+  ctx.fillRect(p.x + 11, p.y + 8, 10, 10);
+}
+
+function drawObjects() {
+  for (const obj of world.objects) {
+    const p = pointToScreen(obj.x, obj.y);
+    if (obj.type === 'relic') {
+      ctx.fillStyle = '#d5b37a';
+      ctx.fillRect(p.x + 10, p.y + 10, 12, 12);
+      ctx.fillStyle = '#fff1bf';
+      ctx.fillRect(p.x + 13, p.y + 13, 6, 6);
     }
-    dialogueEl.classList.add('visible');
-  } else {
-    dialogueEl.classList.remove('visible');
   }
+}
+
+function draw() {
+  if (world.dirty) renderTerrain();
+  updateCamera();
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(world.terrainCanvas, camera.x, camera.y, VIEW_WIDTH, VIEW_HEIGHT, 0, 0, VIEW_WIDTH, VIEW_HEIGHT);
+
+  drawObjects();
+  for (const npc of world.npcs) drawNpc(npc);
+  drawPlayer();
+}
+
+function canWalk(x, y) {
+  const tile = getTile(x, y);
+  return tile !== TILES.water && tile !== TILES.mountain;
+}
+
+function movePlayer(dx, dy) {
+  const nx = player.x + dx;
+  const ny = player.y + dy;
+  if (!canWalk(nx, ny)) return;
+
+  player.x = nx;
+  player.y = ny;
+  if (dx < 0) player.facing = 'left';
+  else if (dx > 0) player.facing = 'right';
+  else if (dy < 0) player.facing = 'up';
+  else if (dy > 0) player.facing = 'down';
+  draw();
+  updateHud();
+}
+
+function addItem(item) {
+  if (!player.inventory.includes(item)) player.inventory.push(item);
+  updateHud();
+}
+
+function interact() {
+  for (const obj of world.objects) {
+    const close = Math.abs(obj.x - player.x) <= 1 && Math.abs(obj.y - player.y) <= 1;
+    if (!close) continue;
+
+    if (obj.type === 'shrine') {
+      player.dharma = Math.min(100, player.dharma + 12);
+      player.vitality = Math.min(100, player.vitality + 6);
+      log('you rest at the shrine. dharma rises and the road feels lighter.');
+      updateHud();
+      draw();
+      return;
+    }
+
+    if (obj.type === 'relic' && !obj.seen) {
+      obj.seen = true;
+      addItem('bronze relic');
+      player.dharma = Math.min(100, player.dharma + 4);
+      log('you found a bronze relic.');
+      draw();
+      return;
+    }
+  }
+
+  for (const npc of world.npcs) {
+    const close = Math.abs(npc.x - player.x) <= 1 && Math.abs(npc.y - player.y) <= 1;
+    if (!close) continue;
+
+    if (dialogueEl) {
+      dialogueEl.innerHTML = `
+        <div class="name">${npc.name}</div>
+        <div class="text">keep the world simple. clarity is the real luxury.</div>
+      `;
+      dialogueEl.classList.add('visible');
+    }
+    log(`${npc.name}: keep the world simple. clarity is the real luxury.`);
+    return;
+  }
+
+  log('nothing close enough to interact with.');
 }
 
 function closeDialogue() {
   if (dialogueEl) dialogueEl.classList.remove('visible');
 }
 
-function addItem(item) {
-  if (!item) return false;
-  player.inventory.push(item);
-  updateStats();
-  return true;
-}
-
-function removeItem(item) {
-  const idx = player.inventory.indexOf(item);
-  if (idx === -1) return false;
-  player.inventory.splice(idx, 1);
-  updateStats();
-  return true;
-}
-
-function acceptQuest(quest) {
-  player.quests.push({ ...quest, active: true, progress: 0 });
-  log(`quest accepted: ${quest.title}`, 'important');
-  closeDialogue();
-  updateStats();
-}
-
-function interact() {
-  const px = Math.round(player.x);
-  const py = Math.round(player.y);
-
-  for (const npc of world.npcs) {
-    if (Math.abs(npc.x - px) <= 1 && Math.abs(npc.y - py) <= 1) {
-      const choices = npc.quest && !player.quests.find((q) => q.id === npc.quest.id) ? [
-        { label: 'accept quest', action: () => acceptQuest(npc.quest) },
-        { label: 'dismiss', action: closeDialogue }
-      ] : null;
-      showDialogue(npc.name, npc.dialog, choices);
-      return;
-    }
-  }
-
-  for (const obj of world.objects) {
-    if (Math.abs(obj.x - px) <= 1 && Math.abs(obj.y - py) <= 1) {
-      if (obj.type === 'temple') {
-        player.dharma = Math.min(100, player.dharma + 15);
-        player.health = Math.min(100, player.health + 10);
-        addItem('prayer beads');
-        log(`you pray at the ${obj.name}. dharma and health increase.`, 'important');
-      } else if (obj.type === 'shrine') {
-        player.dharma += 10;
-        addItem('sacred leaf');
-        log(`you honor the ${obj.name}. dharma increases.`, 'important');
-      } else if (obj.type === 'chest') {
-        if (!obj.opened) {
-          obj.opened = true;
-          const gold = Math.floor(Math.random() * 12) + 5;
-          player.wealth += gold;
-          addItem('ancient relic');
-          log(`you found a hidden chest with ${gold} gold coins!`, 'important');
-        } else {
-          log('the chest is empty.');
-        }
-      }
-      updateStats();
-      return;
-    }
-  }
-
-  if (Math.random() < 0.15) {
-    const events = [
-      () => { player.wealth += 3; log('you find some coins on the path.', 'important'); },
-      () => { player.health -= 8; log('a snake bites you! health -8', 'danger'); },
-      () => { const gain = 5; player.dharma += gain; log(`a wandering sadhu blesses you. dharma +${gain}`, 'important'); },
-      () => { const gain = 8; player.energy += gain; player.health = Math.min(100, player.health + gain); log(`you drink from a holy well. energy +${gain}, health +${gain}`, 'important'); }
-    ];
-    events[Math.floor(Math.random() * events.length)]();
-    updateStats();
-  } else {
-    log('you look around...');
-  }
-}
-
-let lastMove = 0;
-function handleKey(e) {
-  if (dialogueEl && dialogueEl.classList.contains('visible')) {
-    if (e.key === 'Escape') closeDialogue();
+function handleKeyDown(event) {
+  const key = String(event.key || '').toLowerCase();
+  if (dialogueEl && dialogueEl.classList.contains('visible') && key === 'escape') {
+    closeDialogue();
     return;
   }
 
-  const now = Date.now();
-  if (now - lastMove < 60) return;
-  lastMove = now;
+  if (key === 'arrowup' || key === 'w') movePlayer(0, -1);
+  else if (key === 'arrowdown' || key === 's') movePlayer(0, 1);
+  else if (key === 'arrowleft' || key === 'a') movePlayer(-1, 0);
+  else if (key === 'arrowright' || key === 'd') movePlayer(1, 0);
+  else if (key === ' ') interact();
+}
 
-  const key = e.key.toLowerCase();
-  const speed = 1;
-  let dx = 0;
-  let dy = 0;
-  if (key === 'arrowup' || key === 'w') { dy = -speed; player.facing = 'up'; }
-  else if (key === 'arrowdown' || key === 's') { dy = speed; player.facing = 'down'; }
-  else if (key === 'arrowleft' || key === 'a') { dx = -speed; player.facing = 'left'; }
-  else if (key === 'arrowright' || key === 'd') { dx = speed; player.facing = 'right'; }
-  else if (key === ' ' || key === 'spacebar' || key === 'space') { interact(); return; }
-  else return;
-
-  e.preventDefault();
-  const nx = player.x + dx;
-  const ny = player.y + dy;
-  if (nx < 0 || ny < 0 || nx >= world.width || ny >= world.height) return;
-  const tile = world.tiles[Math.floor(ny)][Math.floor(nx)];
-  if (tile === 'mountain') return;
-
-  for (const npc of world.npcs) {
-    if (Math.abs(npc.x - nx) < 0.8 && Math.abs(npc.y - ny) < 0.8) return;
-  }
-
-  player.x = nx;
-  player.y = ny;
-  player.walkFrame = (player.walkFrame + 1) % 3;
+function loop() {
   draw();
-  updateStats();
+  requestAnimationFrame(loop);
 }
 
-function drawBackground() {
-  if (spriteReady(assets.background)) {
-    const bgW = assets.background.width || canvas.width;
-    const bgH = assets.background.height || canvas.height;
-    ctx.drawImage(assets.background, 0, 0, bgW, bgH, 0, 0, canvas.width, canvas.height);
-    return;
-  }
-  ctx.fillStyle = '#2e2619';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-}
+window.addEventListener('keydown', handleKeyDown);
 
-function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawBackground();
-
-  for (let y = 0; y < world.height; y++) {
-    for (let x = 0; x < world.width; x++) {
-      drawTile(world.tiles[y][x], x, y);
-    }
-  }
-
-  for (const obj of world.objects) {
-    drawObject(obj);
-  }
-
-  for (const npc of world.npcs) {
-    drawCharacter(npc, PALETTE.npc, '#ffea90');
-  }
-
-  drawPlayer(player);
-}
-
-window.addEventListener('keydown', handleKey);
-
-generateMap();
-draw();
-updateStats();
-log('welcome to aryavarta. arrow keys or wasd to move. space to interact.');
+generateWorld();
+updateHud();
+log('welcome to aryavarta. explore the clean path network, the shrine, and the quiet forest.');
+loop();
 
 if (typeof process !== 'undefined' && process.versions && process.versions.node) {
-  global.player = player;
   global.world = world;
-  global.assets = assets;
-  global.TILE = TILE;
-  global.generateMap = generateMap;
-  global.getDialogFor = getDialogFor;
-  global.generateQuest = generateQuest;
-  global.interact = interact;
-  global.updateStats = updateStats;
-  global.log = log;
+  global.player = player;
+  global.camera = camera;
+  global.TILE_SIZE = TILE_SIZE;
+  global.generateWorld = generateWorld;
+  global.renderTerrain = renderTerrain;
   global.draw = draw;
+  global.movePlayer = movePlayer;
+  global.interact = interact;
+  global.updateHud = updateHud;
   global.addItem = addItem;
-  global.removeItem = removeItem;
-  global.inventorySummary = inventorySummary;
-  global.getInventorySummary = inventorySummary;
+  global.getTile = getTile;
+  global.canWalk = canWalk;
+  global.log = log;
 }
