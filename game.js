@@ -99,7 +99,7 @@ function getDialogFor(name) {
     ],
     kshatriya: [
       'strength protects the weak.',
-      'a warrior's honor is his life.',
+      "a warrior's honor is his life.",
       'i have faced many battles; each teaches humility.'
     ],
     shramana: [
