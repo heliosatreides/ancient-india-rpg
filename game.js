@@ -13,6 +13,7 @@ const assetPaths = {
   background: 'assets/images/backgrounds/ancient_indian_landscape.jpg',
   terrain: 'assets/images/tiles/kenney_terrain_atlas.png',
   props: 'assets/images/objects/kenney_props_atlas.png',
+  player: 'assets/images/characters/oga_player_single.png',
   characters: 'assets/images/characters/rpg_characters.png'
 };
 
@@ -36,6 +37,7 @@ const assets = {
   background: loadImage(assetPaths.background),
   terrain: loadImage(assetPaths.terrain),
   props: loadImage(assetPaths.props),
+  player: loadImage(assetPaths.player),
   characters: loadImage(assetPaths.characters)
 };
 
@@ -184,6 +186,44 @@ function drawCharacter(entity, fallbackColor, outlineColor) {
   ctx.fillStyle = outlineColor;
   const offset = entity.facing === 'up' ? [6, 2] : entity.facing === 'left' ? [2, 6] : entity.facing === 'right' ? [10, 6] : [6, 10];
   ctx.fillRect(dx + offset[0], dy + offset[1], 4, 4);
+}
+
+function drawPlayer(entity) {
+  const dx = entity.x * TILE;
+  const dy = entity.y * TILE;
+  const renderWidth = 40;
+  const renderHeight = 64;
+  const offsetX = -12;
+  const offsetY = -36;
+
+  const markerX = dx + offsetX - 2;
+  const markerY = dy + offsetY - 2;
+  const markerW = renderWidth + 4;
+  const markerH = renderHeight + 4;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+  ctx.fillRect(dx - 4, dy + TILE - 6, TILE + 8, 6);
+  ctx.fillStyle = 'rgba(255, 204, 0, 0.36)';
+  ctx.fillRect(dx - 6, dy - 6, TILE + 12, TILE + 12);
+
+  if (spriteReady(assets.player)) {
+    ctx.drawImage(assets.player, 0, 0, assets.player.width, assets.player.height, dx + offsetX, dy + offsetY, renderWidth, renderHeight);
+    ctx.fillStyle = 'rgba(255, 230, 120, 0.9)';
+    ctx.fillRect(markerX, markerY, markerW, 2);
+    ctx.fillRect(markerX, markerY + markerH - 2, markerW, 2);
+    ctx.fillRect(markerX, markerY, 2, markerH);
+    ctx.fillRect(markerX + markerW - 2, markerY, 2, markerH);
+    ctx.fillStyle = '#fff6c8';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('you', dx + TILE / 2, dy + offsetY - 6);
+    return;
+  }
+
+  ctx.fillStyle = PALETTE.player;
+  ctx.fillRect(dx, dy - 4, TILE, TILE + 4);
+  ctx.fillStyle = '#ffcc00';
+  ctx.fillRect(dx + 4, dy - 12, 8, 8);
 }
 
 function generateQuest() {
@@ -507,7 +547,7 @@ function draw() {
     drawCharacter(npc, PALETTE.npc, '#ffea90');
   }
 
-  drawCharacter(player, PALETTE.player, '#ffcc00');
+  drawPlayer(player);
 }
 
 window.addEventListener('keydown', handleKey);

@@ -3,7 +3,8 @@ const fs = require('fs');
 
 const ctxCalls = {
   fillRect: [],
-  drawImage: []
+  drawImage: [],
+  fillText: []
 };
 
 const ctx = {
@@ -13,6 +14,7 @@ const ctx = {
   imageSmoothingEnabled: true,
   fillRect: (...args) => ctxCalls.fillRect.push(args),
   drawImage: (...args) => ctxCalls.drawImage.push(args),
+  fillText: (...args) => ctxCalls.fillText.push(args),
   clearRect: () => {}
 };
 
@@ -106,6 +108,7 @@ try {
   assert(global.player, 'player not exported');
   assert(global.world, 'world not exported');
   assert(global.assets, 'assets not exported');
+  assert(global.assets.player, 'player asset not exported');
   assert(typeof global.inventorySummary === 'function', 'inventorySummary not exported');
   console.log('PASS: exports available');
 } catch (e) {
@@ -127,6 +130,7 @@ try {
 try {
   assert(global.assets.background && global.assets.characters, 'assets missing');
   global.assets.background.onload && global.assets.background.onload();
+  global.assets.player.onload && global.assets.player.onload();
   global.assets.characters.onload && global.assets.characters.onload();
   ctxCalls.fillRect.length = 0;
   ctxCalls.drawImage.length = 0;
@@ -138,8 +142,10 @@ try {
   assert.strictEqual(backgroundCall[3], 960, 'background draw should cover canvas width');
   assert.strictEqual(backgroundCall[4], 540, 'background draw should cover canvas height');
   const lastCall = ctxCalls.drawImage[ctxCalls.drawImage.length - 1];
-  assert.strictEqual(lastCall[5], global.player.x * global.TILE, 'player sprite should be scaled to tile size on x');
-  assert.strictEqual(lastCall[6], global.player.y * global.TILE, 'player sprite should be scaled to tile size on y');
+  assert(lastCall[7] >= 40, 'player sprite should be drawn wide enough to stay visible');
+  assert(lastCall[8] >= 64, 'player sprite should be drawn tall enough to stay visible');
+  assert(global.assets.player !== global.assets.characters, 'player should use a dedicated sprite asset');
+  assert(ctxCalls.fillText.some((args) => String(args[0]).toLowerCase().includes('you')), 'player visibility marker missing');
   console.log('PASS: sprite drawing');
 } catch (e) {
   console.error('FAIL: sprite drawing -', e.message);
