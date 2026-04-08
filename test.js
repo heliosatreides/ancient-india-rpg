@@ -68,6 +68,23 @@ const dialogueEl = {
   }
 };
 
+function makeButton() {
+  return {
+    listeners: {},
+    addEventListener(type, fn) { this.listeners[type] = fn; },
+    click() { if (this.listeners.click) this.listeners.click({ preventDefault() {} }); }
+  };
+}
+
+const controls = {
+  'touch-controls': { style: {}, addEventListener: () => {} },
+  'btn-up': makeButton(),
+  'btn-down': makeButton(),
+  'btn-left': makeButton(),
+  'btn-right': makeButton(),
+  'btn-act': makeButton()
+};
+
 const mockEl = () => ({
   innerHTML: '',
   textContent: '',
@@ -91,6 +108,7 @@ global.document = {
     if (id === 'inventory') return inventoryEl;
     if (id === 'log') return logEl;
     if (id === 'dialogue') return dialogueEl;
+    if (controls[id]) return controls[id];
     return mockEl();
   },
   createElement: (tag) => {
@@ -149,6 +167,11 @@ eval(source);
     assert.strictEqual(moved, 1, 'movePlayer should succeed on walkable terrain');
     assert.strictEqual(global.simulation.getPlayerX(), startX + 1, 'player x should update in wasm');
     assert.strictEqual(global.simulation.getPlayerY(), startY, 'player y should stay put');
+    assert.strictEqual(typeof controls['btn-up'].listeners.pointerdown, 'function', 'touch up listener missing');
+    assert.strictEqual(typeof controls['btn-act'].listeners.click, 'function', 'touch action listener missing');
+    const beforeTouchX = global.simulation.getPlayerX();
+    controls['btn-left'].listeners.pointerdown({ preventDefault() {} });
+    assert.strictEqual(global.simulation.getPlayerX(), beforeTouchX - 1, 'touch left should move player');
     console.log('PASS: wasm movement');
   } catch (e) {
     console.error('FAIL: wasm movement -', e.message);

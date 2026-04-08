@@ -50,6 +50,14 @@ const statsEl = document.getElementById('stats');
 const inventoryEl = document.getElementById('inventory');
 const logEl = document.getElementById('log');
 const dialogueEl = document.getElementById('dialogue');
+const touchControlsEl = document.getElementById('touch-controls');
+const controlButtons = {
+  up: document.getElementById('btn-up'),
+  down: document.getElementById('btn-down'),
+  left: document.getElementById('btn-left'),
+  right: document.getElementById('btn-right'),
+  act: document.getElementById('btn-act')
+};
 
 const world = {
   terrainCanvas: createCanvas(1, 1),
@@ -319,6 +327,26 @@ function handleKeyDown(event) {
   else if (key === ' ') interact();
 }
 
+function bindTouchControls() {
+  const bindings = [
+    [controlButtons.up, () => movePlayer(0, -1)],
+    [controlButtons.down, () => movePlayer(0, 1)],
+    [controlButtons.left, () => movePlayer(-1, 0)],
+    [controlButtons.right, () => movePlayer(1, 0)],
+    [controlButtons.act, () => interact()]
+  ];
+
+  for (const [button, action] of bindings) {
+    if (!button) continue;
+    const handler = (event) => {
+      event.preventDefault();
+      action();
+    };
+    button.addEventListener('pointerdown', handler);
+    button.addEventListener('click', handler);
+  }
+}
+
 function loop() {
   if (!simulation) return;
   draw();
@@ -376,6 +404,7 @@ const simulationReady = loadSimulation();
 function startGame() {
   if (gameStarted) return;
   gameStarted = true;
+  bindTouchControls();
   log('welcome to aryavarta. explore the clean path network, the shrine, and the quiet forest.');
   loop();
 }
