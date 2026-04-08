@@ -83,8 +83,8 @@ function generateMap() {
 function getDialogFor(name) {
   const dialogs = {
     sadhu: [
-      'seek truth within.",
-      'dharma is the highest wealth.",
+      'seek truth within.',
+      'dharma is the highest wealth.',
       'even the mightiest warrior needs peace.'
     ],
     merchant: [
@@ -94,7 +94,7 @@ function getDialogFor(name) {
     ],
     brahmin: [
       'the vedas guide the righteous path.',
-      'perform your duty without attachment.",
+      'perform your duty without attachment.',
       ' seek knowledge, not just wealth.'
     ],
     kshatriya: [
