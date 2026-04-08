@@ -1,46 +1,19 @@
 // @ts-check
 
-/**
- * Clean, typed, tile-based engine.
- * The core world is a Uint8Array, static terrain is cached once, and the
- * gameplay layer only draws the camera slice plus a handful of entities.
- */
-
 const canvas = document.getElementById('world');
 const ctx = canvas.getContext('2d');
 
 const TILE_SIZE = 32;
-const WORLD_WIDTH = 96;
-const WORLD_HEIGHT = 64;
 const VIEW_WIDTH = 960;
 const VIEW_HEIGHT = 540;
+const ENTITY_SHRINE = 5;
+const ENTITY_RELIC = 6;
+const ENTITY_SAGE = 7;
 
-canvas.width = VIEW_WIDTH;
-canvas.height = VIEW_HEIGHT;
-ctx.imageSmoothingEnabled = false;
-
-/** @typedef {0|1|2|3|4|5} TileId */
-/** @typedef {{x:number, y:number, type:string, name:string, seen?:boolean, reward?:string}} Entity */
-/** @typedef {{x:number, y:number, facing:'up'|'down'|'left'|'right', dharma:number, vitality:number, inventory:string[], visualRadius:number}} Player */
-/** @typedef {{width:number, height:number, tiles:Uint8Array, terrainCanvas: HTMLCanvasElement, terrainCtx: CanvasRenderingContext2D, dirty:boolean, npcs:Entity[], objects:Entity[]}} World */
-
-const TILES = /** @type {const} */ ({
-  grass: 0,
-  path: 1,
-  water: 2,
-  forest: 3,
-  mountain: 4,
-  shrine: 5
-});
-
-const TILE_LABELS = [
-  'grass',
-  'path',
-  'water',
-  'forest',
-  'mountain',
-  'shrine'
-];
+const ITEM_NAMES = {
+  1: 'river shell',
+  2: 'bronze relic'
+};
 
 const PALETTE = {
   grass: '#7d9b62',
@@ -55,16 +28,15 @@ const PALETTE = {
   npc: '#f0cf67',
   npcTrim: '#4f3d1f',
   text: '#f5ebd7',
-  muted: '#b7a78d',
-  panel: 'rgba(15, 18, 20, 0.88)'
+  muted: '#b7a78d'
 };
+
+canvas.width = VIEW_WIDTH;
+canvas.height = VIEW_HEIGHT;
+ctx.imageSmoothingEnabled = false;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
-}
-
-function indexFor(x, y) {
-  return y * WORLD_WIDTH + x;
 }
 
 function createCanvas(width, height) {
@@ -74,38 +46,15 @@ function createCanvas(width, height) {
   return c;
 }
 
-function makeWorld() {
-  const terrainCanvas = createCanvas(WORLD_WIDTH * TILE_SIZE, WORLD_HEIGHT * TILE_SIZE);
-  const terrainCtx = terrainCanvas.getContext('2d');
-  terrainCtx.imageSmoothingEnabled = false;
+const statsEl = document.getElementById('stats');
+const inventoryEl = document.getElementById('inventory');
+const logEl = document.getElementById('log');
+const dialogueEl = document.getElementById('dialogue');
 
-  /** @type {World} */
-  const world = {
-    width: WORLD_WIDTH,
-    height: WORLD_HEIGHT,
-    tiles: new Uint8Array(WORLD_WIDTH * WORLD_HEIGHT),
-    terrainCanvas,
-    terrainCtx,
-    dirty: true,
-    npcs: [],
-    objects: []
-  };
-
-  return world;
-}
-
-/** @type {World} */
-const world = makeWorld();
-
-/** @type {Player} */
-const player = {
-  x: Math.floor(WORLD_WIDTH / 2) - 8,
-  y: Math.floor(WORLD_HEIGHT / 2) + 4,
-  facing: 'down',
-  dharma: 52,
-  vitality: 100,
-  inventory: ['river shell'],
-  visualRadius: 24
+const world = {
+  terrainCanvas: createCanvas(1, 1),
+  terrainCtx: null,
+  dirty: true
 };
 
 const camera = {
@@ -113,105 +62,73 @@ const camera = {
   y: 0
 };
 
-const statsEl = document.getElementById('stats');
-const inventoryEl = document.getElementById('inventory');
-const logEl = document.getElementById('log');
-const dialogueEl = document.getElementById('dialogue');
+let simulation = null;
+let gameStarted = false;
 
-function setTile(x, y, tileId) {
-  world.tiles[indexFor(x, y)] = tileId;
-}
-
-function getTile(x, y) {
-  if (x < 0 || y < 0 || x >= WORLD_WIDTH || y >= WORLD_HEIGHT) return TILES.mountain;
-  return world.tiles[indexFor(x, y)];
-}
-
-function tileName(tileId) {
-  return TILE_LABELS[tileId] || 'grass';
-}
-
-function generateWorld() {
-  world.npcs = [];
-  world.objects = [];
-
-  const centerX = Math.floor(WORLD_WIDTH / 2);
-  const centerY = Math.floor(WORLD_HEIGHT / 2);
-  const shrineX = centerX + 3;
-  const shrineY = centerY + 1;
-
-  for (let y = 0; y < WORLD_HEIGHT; y++) {
-    for (let x = 0; x < WORLD_WIDTH; x++) {
-      let tile = TILES.grass;
-
-      const border = x === 0 || y === 0 || x === WORLD_WIDTH - 1 || y === WORLD_HEIGHT - 1;
-      const lake = Math.abs(x - 18) + Math.abs(y - 15) < 10 || (x > 75 && y < 18 && Math.abs(x - 83) + Math.abs(y - 10) < 12);
-      const riverBand = Math.abs(y - (centerY + Math.sin(x / 8) * 3)) < 2.2;
-      const forestWest = x < 18 && y > 30 && y < 52;
-      const forestEast = x > 66 && y > 36 && y < 58;
-      const pathA = (x > 12 && x < centerX + 2 && Math.abs(y - (centerY + 2)) <= 1) || (y > 12 && y < centerY + 2 && Math.abs(x - (centerX - 8)) <= 1);
-      const pathB = (x > centerX - 2 && x < shrineX + 10 && Math.abs(y - shrineY) <= 1);
-
-      if (border) tile = TILES.mountain;
-      else if (lake || riverBand) tile = TILES.water;
-      else if (forestWest || forestEast) tile = TILES.forest;
-      else if (pathA || pathB) tile = TILES.path;
-      else if (Math.abs(x - shrineX) <= 1 && Math.abs(y - shrineY) <= 1) tile = TILES.shrine;
-
-      setTile(x, y, tile);
-    }
+function kindToCode(kind) {
+  if (typeof kind === 'number') return kind;
+  switch (String(kind).toLowerCase()) {
+    case 'shrine': return ENTITY_SHRINE;
+    case 'relic': return ENTITY_RELIC;
+    case 'sage': return ENTITY_SAGE;
+    default: return -1;
   }
-
-  world.objects.push(
-    { x: shrineX, y: shrineY, type: 'shrine', name: 'quiet shrine', reward: 'dharma' },
-    { x: centerX - 6, y: centerY - 2, type: 'relic', name: 'bronze relic', reward: 'relic' }
-  );
-
-  world.npcs.push({
-    x: centerX + 10,
-    y: centerY + 5,
-    type: 'sage',
-    name: 'path sage',
-    reward: 'wisdom'
-  });
-
-  world.dirty = true;
 }
 
-function terrainColor(tileId) {
+function tileColor(tileId) {
   switch (tileId) {
-    case TILES.path: return PALETTE.path;
-    case TILES.water: return PALETTE.water;
-    case TILES.forest: return PALETTE.forest;
-    case TILES.mountain: return PALETTE.mountain;
-    case TILES.shrine: return PALETTE.shrineFloor;
+    case 1: return PALETTE.path;
+    case 2: return PALETTE.water;
+    case 3: return PALETTE.forest;
+    case 4: return PALETTE.mountain;
+    case 5: return PALETTE.shrineFloor;
     default: return PALETTE.grass;
   }
 }
 
-function renderTerrain() {
-  const g = world.terrainCtx;
-  g.clearRect(0, 0, world.terrainCanvas.width, world.terrainCanvas.height);
-  g.imageSmoothingEnabled = false;
+function itemName(code) {
+  return ITEM_NAMES[code] || `item ${code}`;
+}
 
-  for (let y = 0; y < WORLD_HEIGHT; y++) {
-    for (let x = 0; x < WORLD_WIDTH; x++) {
-      const tileId = getTile(x, y);
+function updateCamera() {
+  if (!simulation) return;
+  const worldPixelWidth = simulation.getWorldWidth() * TILE_SIZE;
+  const worldPixelHeight = simulation.getWorldHeight() * TILE_SIZE;
+  camera.x = clamp(simulation.getPlayerX() * TILE_SIZE - VIEW_WIDTH / 2, 0, worldPixelWidth - VIEW_WIDTH);
+  camera.y = clamp(simulation.getPlayerY() * TILE_SIZE - VIEW_HEIGHT / 2, 0, worldPixelHeight - VIEW_HEIGHT);
+}
+
+function prepareTerrainBuffer() {
+  if (!simulation) return;
+  world.terrainCanvas.width = simulation.getWorldWidth() * TILE_SIZE;
+  world.terrainCanvas.height = simulation.getWorldHeight() * TILE_SIZE;
+  world.terrainCtx = world.terrainCanvas.getContext('2d');
+  world.terrainCtx.imageSmoothingEnabled = false;
+  world.dirty = true;
+}
+
+function renderTerrain() {
+  if (!simulation || !world.terrainCtx) return;
+
+  const width = simulation.getWorldWidth();
+  const height = simulation.getWorldHeight();
+  const g = world.terrainCtx;
+
+  g.clearRect(0, 0, world.terrainCanvas.width, world.terrainCanvas.height);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const tileId = simulation.getTile(x, y);
       const px = x * TILE_SIZE;
       const py = y * TILE_SIZE;
 
-      g.fillStyle = terrainColor(tileId);
+      g.fillStyle = tileColor(tileId);
       g.fillRect(px, py, TILE_SIZE, TILE_SIZE);
 
-      // subtle depth without visual noise
-      g.fillStyle = tileId === TILES.water ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.05)';
-      if (tileId === TILES.water) {
-        g.fillRect(px + 4, py + 9, 18, 3);
-      } else if (tileId === TILES.path) {
-        g.fillRect(px + 5, py + 5, 22, 2);
-      } else if (tileId === TILES.shrine) {
-        g.fillRect(px + 6, py + 6, 20, 2);
-      }
+      g.fillStyle = tileId === 2 ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.05)';
+      if (tileId === 2) g.fillRect(px + 4, py + 9, 18, 3);
+      else if (tileId === 1) g.fillRect(px + 5, py + 5, 22, 2);
+      else if (tileId === 5) g.fillRect(px + 6, py + 6, 20, 2);
 
       g.fillStyle = 'rgba(0,0,0,0.12)';
       g.fillRect(px, py + TILE_SIZE - 1, TILE_SIZE, 1);
@@ -219,11 +136,10 @@ function renderTerrain() {
     }
   }
 
-  // shrine structure baked into the buffer for a cleaner, performance-friendly world.
-  const shrine = world.objects.find((o) => o.type === 'shrine');
-  if (shrine) {
-    const px = shrine.x * TILE_SIZE;
-    const py = shrine.y * TILE_SIZE;
+  const shrineIndex = simulation.findEntity(ENTITY_SHRINE);
+  if (shrineIndex >= 0) {
+    const px = simulation.entityX(shrineIndex) * TILE_SIZE;
+    const py = simulation.entityY(shrineIndex) * TILE_SIZE;
     g.fillStyle = '#9a7c4b';
     g.fillRect(px + 6, py + 10, 20, 10);
     g.fillStyle = '#f6e6a5';
@@ -233,28 +149,97 @@ function renderTerrain() {
   world.dirty = false;
 }
 
-function updateCamera() {
-  const worldPixelWidth = WORLD_WIDTH * TILE_SIZE;
-  const worldPixelHeight = WORLD_HEIGHT * TILE_SIZE;
-  camera.x = clamp(player.x * TILE_SIZE - VIEW_WIDTH / 2, 0, worldPixelWidth - VIEW_WIDTH);
-  camera.y = clamp(player.y * TILE_SIZE - VIEW_HEIGHT / 2, 0, worldPixelHeight - VIEW_HEIGHT);
+function drawPlayer() {
+  const x = simulation.getPlayerX() * TILE_SIZE - camera.x;
+  const y = simulation.getPlayerY() * TILE_SIZE - camera.y;
+  const facing = simulation.getPlayerFacing();
+
+  ctx.fillStyle = 'rgba(255, 230, 140, 0.25)';
+  ctx.fillRect(x - 8, y - 10, 48, 48);
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.fillRect(x + 6, y + 28, 20, 7);
+  ctx.fillStyle = PALETTE.player;
+  ctx.fillRect(x + 7, y + 2, 18, 24);
+  ctx.fillStyle = PALETTE.playerTrim;
+  ctx.fillRect(x + 10, y + 7, 12, 12);
+  ctx.fillStyle = '#f6c94c';
+  ctx.fillRect(x + 4, y - 6, 24, 10);
+  ctx.fillStyle = '#fff2ba';
+  if (facing === 0) ctx.fillRect(x + 11, y - 2, 6, 4);
+  else if (facing === 1) ctx.fillRect(x + 11, y + 24, 6, 4);
+  else if (facing === 2) ctx.fillRect(x + 2, y + 10, 4, 6);
+  else ctx.fillRect(x + 22, y + 10, 4, 6);
 }
 
-function drawPanelText(el, html) {
+function drawEntities() {
+  const count = simulation.entityCount();
+  for (let i = 0; i < count; i++) {
+    const kind = simulation.entityKind(i);
+    if (kind === ENTITY_SHRINE) continue;
+
+    const x = simulation.entityX(i) * TILE_SIZE - camera.x;
+    const y = simulation.entityY(i) * TILE_SIZE - camera.y;
+
+    if (kind === ENTITY_RELIC) {
+      ctx.fillStyle = '#d5b37a';
+      ctx.fillRect(x + 10, y + 10, 12, 12);
+      ctx.fillStyle = '#fff1bf';
+      ctx.fillRect(x + 13, y + 13, 6, 6);
+    } else if (kind === ENTITY_SAGE) {
+      ctx.fillStyle = 'rgba(255, 228, 120, 0.2)';
+      ctx.fillRect(x - 4, y - 4, 40, 40);
+      ctx.fillStyle = PALETTE.npc;
+      ctx.fillRect(x + 8, y + 4, 16, 22);
+      ctx.fillStyle = PALETTE.npcTrim;
+      ctx.fillRect(x + 11, y + 8, 10, 10);
+    }
+  }
+}
+
+function draw() {
+  if (!simulation) return;
+  if (world.dirty) renderTerrain();
+  updateCamera();
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(
+    world.terrainCanvas,
+    camera.x,
+    camera.y,
+    VIEW_WIDTH,
+    VIEW_HEIGHT,
+    0,
+    0,
+    VIEW_WIDTH,
+    VIEW_HEIGHT
+  );
+
+  drawEntities();
+  drawPlayer();
+}
+
+function drawPanel(el, html) {
   if (el) el.innerHTML = html;
 }
 
 function updateHud() {
-  drawPanelText(statsEl, `
+  if (!simulation) return;
+
+  drawPanel(statsEl, `
     <div class="panel-title">stats</div>
-    <div class="stat-row"><span>dharma</span><strong>${player.dharma}</strong></div>
-    <div class="stat-row"><span>vitality</span><strong>${player.vitality}</strong></div>
-    <div class="stat-row"><span>position</span><strong>${player.x}, ${player.y}</strong></div>
+    <div class="stat-row"><span>dharma</span><strong>${simulation.getPlayerDharma()}</strong></div>
+    <div class="stat-row"><span>vitality</span><strong>${simulation.getPlayerVitality()}</strong></div>
+    <div class="stat-row"><span>position</span><strong>${simulation.getPlayerX()}, ${simulation.getPlayerY()}</strong></div>
   `);
 
-  drawPanelText(inventoryEl, `
+  const inventoryItems = [];
+  for (let i = 0; i < simulation.getInventoryLength(); i++) {
+    inventoryItems.push(`<div>${itemName(simulation.getInventoryItem(i))}</div>`);
+  }
+
+  drawPanel(inventoryEl, `
     <div class="panel-title">inventory</div>
-    <div class="inventory-list">${player.inventory.map((item) => `<div>${item}</div>`).join('')}</div>
+    <div class="inventory-list">${inventoryItems.join('')}</div>
   `);
 }
 
@@ -267,140 +252,57 @@ function log(message) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-function pointToScreen(x, y) {
-  return {
-    x: Math.round(x * TILE_SIZE - camera.x),
-    y: Math.round(y * TILE_SIZE - camera.y)
-  };
-}
-
-function drawPlayer() {
-  const p = pointToScreen(player.x, player.y);
-
-  // outer glow and shadow create a crisp silhouette.
-  ctx.fillStyle = 'rgba(255, 230, 140, 0.25)';
-  ctx.fillRect(p.x - 8, p.y - 10, 48, 48);
-  ctx.fillStyle = 'rgba(0,0,0,0.28)';
-  ctx.fillRect(p.x + 6, p.y + 28, 20, 7);
-
-  ctx.fillStyle = PALETTE.player;
-  ctx.fillRect(p.x + 7, p.y + 2, 18, 24);
-  ctx.fillStyle = PALETTE.playerTrim;
-  ctx.fillRect(p.x + 10, p.y + 7, 12, 12);
-  ctx.fillStyle = '#f6c94c';
-  ctx.fillRect(p.x + 4, p.y - 6, 24, 10);
-
-  // orientation marker, compact and readable.
-  ctx.fillStyle = '#fff2ba';
-  if (player.facing === 'up') ctx.fillRect(p.x + 11, p.y - 2, 6, 4);
-  else if (player.facing === 'down') ctx.fillRect(p.x + 11, p.y + 24, 6, 4);
-  else if (player.facing === 'left') ctx.fillRect(p.x + 2, p.y + 10, 4, 6);
-  else ctx.fillRect(p.x + 22, p.y + 10, 4, 6);
-}
-
-function drawNpc(npc) {
-  const p = pointToScreen(npc.x, npc.y);
-  ctx.fillStyle = 'rgba(255, 228, 120, 0.2)';
-  ctx.fillRect(p.x - 4, p.y - 4, 40, 40);
-  ctx.fillStyle = PALETTE.npc;
-  ctx.fillRect(p.x + 8, p.y + 4, 16, 22);
-  ctx.fillStyle = PALETTE.npcTrim;
-  ctx.fillRect(p.x + 11, p.y + 8, 10, 10);
-}
-
-function drawObjects() {
-  for (const obj of world.objects) {
-    const p = pointToScreen(obj.x, obj.y);
-    if (obj.type === 'relic') {
-      ctx.fillStyle = '#d5b37a';
-      ctx.fillRect(p.x + 10, p.y + 10, 12, 12);
-      ctx.fillStyle = '#fff1bf';
-      ctx.fillRect(p.x + 13, p.y + 13, 6, 6);
-    }
-  }
-}
-
-function draw() {
-  if (world.dirty) renderTerrain();
-  updateCamera();
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(world.terrainCanvas, camera.x, camera.y, VIEW_WIDTH, VIEW_HEIGHT, 0, 0, VIEW_WIDTH, VIEW_HEIGHT);
-
-  drawObjects();
-  for (const npc of world.npcs) drawNpc(npc);
-  drawPlayer();
-}
-
-function canWalk(x, y) {
-  const tile = getTile(x, y);
-  return tile !== TILES.water && tile !== TILES.mountain;
-}
-
-function movePlayer(dx, dy) {
-  const nx = player.x + dx;
-  const ny = player.y + dy;
-  if (!canWalk(nx, ny)) return;
-
-  player.x = nx;
-  player.y = ny;
-  if (dx < 0) player.facing = 'left';
-  else if (dx > 0) player.facing = 'right';
-  else if (dy < 0) player.facing = 'up';
-  else if (dy > 0) player.facing = 'down';
-  draw();
-  updateHud();
-}
-
-function addItem(item) {
-  if (!player.inventory.includes(item)) player.inventory.push(item);
-  updateHud();
-}
-
-function interact() {
-  for (const obj of world.objects) {
-    const close = Math.abs(obj.x - player.x) <= 1 && Math.abs(obj.y - player.y) <= 1;
-    if (!close) continue;
-
-    if (obj.type === 'shrine') {
-      player.dharma = Math.min(100, player.dharma + 12);
-      player.vitality = Math.min(100, player.vitality + 6);
-      log('you rest at the shrine. dharma rises and the road feels lighter.');
-      updateHud();
-      draw();
-      return;
-    }
-
-    if (obj.type === 'relic' && !obj.seen) {
-      obj.seen = true;
-      addItem('bronze relic');
-      player.dharma = Math.min(100, player.dharma + 4);
-      log('you found a bronze relic.');
-      draw();
-      return;
-    }
-  }
-
-  for (const npc of world.npcs) {
-    const close = Math.abs(npc.x - player.x) <= 1 && Math.abs(npc.y - player.y) <= 1;
-    if (!close) continue;
-
-    if (dialogueEl) {
-      dialogueEl.innerHTML = `
-        <div class="name">${npc.name}</div>
-        <div class="text">keep the world simple. clarity is the real luxury.</div>
-      `;
-      dialogueEl.classList.add('visible');
-    }
-    log(`${npc.name}: keep the world simple. clarity is the real luxury.`);
-    return;
-  }
-
-  log('nothing close enough to interact with.');
+function showDialogue(name, text) {
+  if (!dialogueEl) return;
+  dialogueEl.innerHTML = `<div class="name">${name}</div><div class="text">${text}</div>`;
+  dialogueEl.classList.add('visible');
 }
 
 function closeDialogue() {
   if (dialogueEl) dialogueEl.classList.remove('visible');
+}
+
+function movePlayer(dx, dy) {
+  if (!simulation) return 0;
+  const moved = simulation.movePlayer(dx, dy);
+  if (moved) {
+    updateHud();
+    draw();
+  }
+  return moved;
+}
+
+function generateWorld() {
+  if (!simulation) throw new Error('simulation not ready');
+  simulation.init();
+  prepareTerrainBuffer();
+  updateHud();
+  draw();
+}
+
+function interact() {
+  if (!simulation) return 0;
+  const outcome = simulation.interact();
+  if (outcome === 1) {
+    log('you rest at the shrine. dharma rises and the road feels lighter.');
+    updateHud();
+    draw();
+    return outcome;
+  }
+  if (outcome === 2) {
+    log('you found a bronze relic.');
+    updateHud();
+    draw();
+    return outcome;
+  }
+  if (outcome === 3) {
+    showDialogue('path sage', 'keep the world simple. clarity is the real luxury.');
+    log('path sage: keep the world simple. clarity is the real luxury.');
+    return outcome;
+  }
+
+  log('nothing close enough to interact with.');
+  return outcome;
 }
 
 function handleKeyDown(event) {
@@ -418,20 +320,75 @@ function handleKeyDown(event) {
 }
 
 function loop() {
+  if (!simulation) return;
   draw();
   requestAnimationFrame(loop);
 }
 
-window.addEventListener('keydown', handleKeyDown);
+async function loadSimulation() {
+  const response = await fetch('simulation/simulation.wasm');
+  if (!response.ok) throw new Error(`failed to load wasm simulation: ${response.status}`);
+  const bytes = await response.arrayBuffer();
+  const { instance } = await WebAssembly.instantiate(bytes, {});
+  const exports = instance.exports;
 
-generateWorld();
-updateHud();
-log('welcome to aryavarta. explore the clean path network, the shrine, and the quiet forest.');
-loop();
+  simulation = {
+    backend: 'wasm',
+    init: () => exports.init_world(),
+    getWorldWidth: () => exports.world_width(),
+    getWorldHeight: () => exports.world_height(),
+    getTileSize: () => exports.tile_size(),
+    getTile: (x, y) => exports.get_tile(x, y),
+    getPlayerX: () => exports.player_x(),
+    getPlayerY: () => exports.player_y(),
+    getPlayerFacing: () => exports.player_facing(),
+    getPlayerDharma: () => exports.player_dharma(),
+    getPlayerVitality: () => exports.player_vitality(),
+    getInventoryLength: () => exports.inventory_len(),
+    getInventoryItem: (index) => exports.inventory_item(index),
+    entityCount: () => exports.entity_count(),
+    entityKind: (index) => exports.entity_kind(index),
+    entityX: (index) => exports.entity_x(index),
+    entityY: (index) => exports.entity_y(index),
+    entitySeen: (index) => exports.entity_seen(index),
+    getObjectCount: () => exports.entity_count(),
+    getObjectKind: (index) => exports.entity_kind(index),
+    getObjectX: (index) => exports.entity_x(index),
+    getObjectY: (index) => exports.entity_y(index),
+    getObjectSeen: (index) => exports.entity_seen(index),
+    findEntity: (kind) => exports.find_entity(kindToCode(kind)),
+    findObject: (kind) => exports.find_entity(kindToCode(kind)),
+    setPlayerPosition: (x, y) => exports.set_player_position(x, y),
+    movePlayer: (dx, dy) => exports.move_player(dx, dy),
+    interact: () => exports.interact()
+  };
+
+  if (typeof global !== 'undefined') {
+    global.simulation = simulation;
+  }
+
+  generateWorld();
+  return simulation;
+}
+
+const simulationReady = loadSimulation();
+
+function startGame() {
+  if (gameStarted) return;
+  gameStarted = true;
+  log('welcome to aryavarta. explore the clean path network, the shrine, and the quiet forest.');
+  loop();
+}
+
+simulationReady.then(startGame).catch((error) => {
+  console.error(error);
+  log('failed to load the wasm simulation.');
+});
+
+window.addEventListener('keydown', handleKeyDown);
 
 if (typeof process !== 'undefined' && process.versions && process.versions.node) {
   global.world = world;
-  global.player = player;
   global.camera = camera;
   global.TILE_SIZE = TILE_SIZE;
   global.generateWorld = generateWorld;
@@ -440,8 +397,8 @@ if (typeof process !== 'undefined' && process.versions && process.versions.node)
   global.movePlayer = movePlayer;
   global.interact = interact;
   global.updateHud = updateHud;
-  global.addItem = addItem;
-  global.getTile = getTile;
-  global.canWalk = canWalk;
   global.log = log;
+  global.closeDialogue = closeDialogue;
+  global.loadSimulation = loadSimulation;
+  global.simulationReady = simulationReady;
 }

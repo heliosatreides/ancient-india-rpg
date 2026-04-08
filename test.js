@@ -1,5 +1,6 @@
 const assert = require('assert');
 const fs = require('fs');
+const path = require('path');
 
 const mainCalls = {
   fillRect: [],
@@ -79,6 +80,8 @@ const mockEl = () => ({
   querySelectorAll: () => []
 });
 
+const wasmPath = path.resolve('simulation/simulation.wasm');
+
 global.requestAnimationFrame = () => 0;
 global.window = { addEventListener: () => {}, requestAnimationFrame: () => 0 };
 global.document = {
@@ -96,61 +99,92 @@ global.document = {
   }
 };
 
+global.fetch = async (resource) => {
+  const resolved = resource.startsWith('http') ? resource : wasmPath;
+  const bytes = fs.readFileSync(resolved);
+  return {
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+  };
+};
+
 const source = fs.readFileSync('game.js', 'utf8');
 eval(source);
 
-try {
-  assert(global.world, 'world not exported');
-  assert(global.player, 'player not exported');
-  assert(global.generateWorld, 'generateWorld not exported');
-  assert(global.renderTerrain, 'renderTerrain not exported');
-  console.log('PASS: exports available');
-} catch (e) {
-  console.error('FAIL: exports -', e.message);
-  process.exit(1);
-}
+(async () => {
+  try {
+    assert(global.simulationReady instanceof Promise, 'simulationReady promise missing');
+    await global.simulationReady;
+    assert(global.simulation, 'simulation bridge missing');
+    assert.strictEqual(global.simulation.backend, 'wasm', 'simulation backend should be wasm');
+    assert.strictEqual(typeof global.simulation.getWorldWidth, 'function', 'world width getter missing');
+    assert.strictEqual(typeof global.simulation.movePlayer, 'function', 'movePlayer missing');
+    console.log('PASS: wasm bridge available');
+  } catch (e) {
+    console.error('FAIL: wasm bridge -', e.message);
+    process.exit(1);
+  }
 
-try {
-  assert(global.world.tiles instanceof Uint8Array, 'tiles should be typed');
-  assert.strictEqual(global.world.tiles.length, global.world.width * global.world.height, 'tile grid size mismatch');
-  const uniqueTiles = new Set(global.world.tiles);
-  assert(uniqueTiles.size <= 6, 'terrain should stay simple and readable');
-  assert(global.world.terrainCanvas, 'terrain buffer missing');
-  assert(global.world.terrainCanvas.width > 0 && global.world.terrainCanvas.height > 0, 'terrain canvas size invalid');
-  console.log('PASS: typed terrain');
-} catch (e) {
-  console.error('FAIL: typed terrain -', e.message);
-  process.exit(1);
-}
+  try {
+    assert.strictEqual(global.simulation.getWorldWidth(), 96, 'unexpected world width');
+    assert.strictEqual(global.simulation.getWorldHeight(), 64, 'unexpected world height');
+    assert(global.simulation.getTile(0, 0) >= 0, 'tile lookup failed');
+    const tiles = new Set([
+      global.simulation.getTile(0, 0),
+      global.simulation.getTile(18, 15),
+      global.simulation.getTile(40, 36)
+    ]);
+    assert(tiles.size >= 3, 'simulation should generate varied terrain');
+    console.log('PASS: wasm world state');
+  } catch (e) {
+    console.error('FAIL: wasm world state -', e.message);
+    process.exit(1);
+  }
 
-try {
-  mainCalls.fillRect.length = 0;
-  mainCalls.drawImage.length = 0;
-  global.world.dirty = true;
-  global.draw();
-  assert(mainCalls.drawImage.length >= 1, 'main canvas should use cached terrain drawImage');
-  assert(mainCalls.drawImage.some((call) => call[0] === global.world.terrainCanvas), 'terrain buffer not used on main canvas');
-  assert(mainCalls.fillRect.some((call) => call[2] >= 40 && call[3] >= 40), 'player highlight too small');
-  console.log('PASS: cached terrain render');
-} catch (e) {
-  console.error('FAIL: cached terrain render -', e.message);
-  process.exit(1);
-}
+  try {
+    const startX = global.simulation.getPlayerX();
+    const startY = global.simulation.getPlayerY();
+    const moved = global.simulation.movePlayer(1, 0);
+    assert.strictEqual(moved, 1, 'movePlayer should succeed on walkable terrain');
+    assert.strictEqual(global.simulation.getPlayerX(), startX + 1, 'player x should update in wasm');
+    assert.strictEqual(global.simulation.getPlayerY(), startY, 'player y should stay put');
+    console.log('PASS: wasm movement');
+  } catch (e) {
+    console.error('FAIL: wasm movement -', e.message);
+    process.exit(1);
+  }
 
-try {
-  const shrine = global.world.objects.find((obj) => obj.type === 'shrine');
-  assert(shrine, 'shrine missing');
-  global.player.x = shrine.x;
-  global.player.y = shrine.y;
-  const dharmaBefore = global.player.dharma;
-  global.interact();
-  assert(global.player.dharma > dharmaBefore, 'shrine should raise dharma');
-  assert(statsEl.innerHTML.includes('dharma'), 'stats panel should render');
-  assert(inventoryEl.innerHTML.includes('river shell'), 'inventory panel should render');
-  console.log('PASS: shrine interaction');
-} catch (e) {
-  console.error('FAIL: shrine interaction -', e.message);
-  process.exit(1);
-}
+  try {
+    mainCalls.fillRect.length = 0;
+    mainCalls.drawImage.length = 0;
+    global.draw();
+    assert(mainCalls.drawImage.length >= 1, 'main canvas should draw cached terrain');
+    assert(mainCalls.drawImage.some((call) => call[0] === global.world.terrainCanvas), 'terrain buffer not used on main canvas');
+    assert(mainCalls.fillRect.some((call) => call[2] >= 40 && call[3] >= 40), 'player highlight too small');
+    console.log('PASS: cached terrain render');
+  } catch (e) {
+    console.error('FAIL: cached terrain render -', e.message);
+    process.exit(1);
+  }
 
-console.log('All tests passed.');
+  try {
+    const shrineIndex = global.simulation.findObject('shrine');
+    assert(shrineIndex >= 0, 'shrine missing');
+    const shrineX = global.simulation.getObjectX(shrineIndex);
+    const shrineY = global.simulation.getObjectY(shrineIndex);
+    global.simulation.setPlayerPosition(shrineX, shrineY);
+    const dharmaBefore = global.simulation.getPlayerDharma();
+    const outcome = global.simulation.interact();
+    assert.strictEqual(outcome, 1, 'shrine interaction should return shrine outcome');
+    assert(global.simulation.getPlayerDharma() > dharmaBefore, 'shrine should raise dharma');
+    assert(statsEl.innerHTML.includes('dharma'), 'stats panel should render');
+    assert(inventoryEl.innerHTML.includes('river shell'), 'inventory panel should render');
+    console.log('PASS: wasm shrine interaction');
+  } catch (e) {
+    console.error('FAIL: wasm shrine interaction -', e.message);
+    process.exit(1);
+  }
+
+  console.log('All tests passed.');
+})();
