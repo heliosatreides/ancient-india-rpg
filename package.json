@@ -1,0 +1,7 @@
+{
+  "name": "ancient-india-rpg",
+  "version": "0.1.0",
+  "scripts": {
+    "test": "node run_tests.js"
+  }
+}
